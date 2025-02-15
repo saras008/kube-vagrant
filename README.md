@@ -1,70 +1,160 @@
-sudo swapoff -a
-sudo sed -i '/swap/d' /etc/fstab
+---
 
-cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
-br_netfilter
-EOF
+## Table of Contents
+1. [Deploy a New Kubernetes Master Node](#deploy-a-new-kubernetes-master-node)
+2. [Copy the Backup to the Test Machine](#copy-the-backup-to-the-test-machine)
+3. [Stop etcd on the Test Cluster](#stop-etcd-on-the-test-cluster)
+4. [Remove Old etcd Data](#remove-old-etcd-data)
+5. [Restore etcd Backup on the Test Cluster](#restore-etcd-backup-on-the-test-cluster)
+6. [Start etcd](#start-etcd)
+7. [Verify etcd is Running](#verify-etcd-is-running)
+8. [Restart Kubernetes Components](#restart-kubernetes-components)
+9. [Verify Kubernetes is Restored](#verify-kubernetes-is-restored)
+10. [Final Steps: Testing in the New Environment](#final-steps-testing-in-the-new-environment)
+11. [Summary of Key Commands](#summary-of-key-commands)
 
-sudo modprobe br_netfilter
+---
 
-cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-EOF
+## Deploy a New Kubernetes Master Node
 
-sudo sysctl --system
+1. On the test machine, initialize the Kubernetes master node:
+   ```
+   sudo kubeadm init --pod-network-cidr=192.168.1.0/16
+   ```
+2. Wait for the initialization to complete.
+3. Move your kubeconfig:
+   ```
+   mkdir -p $HOME/.kube
+   sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+   sudo chown $(id -u):$(id -g) $HOME/.kube/config
+   ```
 
-sudo apt-get update -y
-sudo apt-get install -y apt-transport-https ca-certificates curl gnupg
+---
 
-sudo apt-get install -y containerd
+## Copy the Backup to the Test Machine
 
-sudo mkdir -p /etc/containerd
-containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
-sudo systemctl restart containerd
-sudo systemctl enable containerd
+1. From your production environment, transfer the etcd backup to the test machine:
+   ```
+   scp /backup/etcd-snapshot.db user@your-test-node:/home/user/
+   ```
+2. On the test machine, move the backup to the desired location:
+   ```
+   sudo mv /home/user/etcd-snapshot.db /backup/
+   ```
 
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo tee /etc/apt/keyrings/kubernetes-apt-keyring.asc > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+---
 
-sudo apt-get update -y
-sudo apt-get install -y kubelet kubeadm kubectl
+## Stop etcd on the Test Cluster
 
-sudo systemctl enable kubelet
-sudo systemctl start kubelet
+1. Stop the etcd service:
+   ```
+   sudo systemctl stop etcd
+   ```
+2. Verify that etcd has stopped:
+   ```
+   sudo systemctl status etcd
+   ```
 
-# Running only master node
+---
 
-sudo sysctl -w net.ipv4.ip_forward=1
+## Remove Old etcd Data
 
-sudo kubeadm init --pod-network-cidr=192.168.1.0/16
+1. Move the old etcd data:
+   ```
+   sudo mv /var/lib/etcd /var/lib/etcd.old
+   ```
+2. Create a new directory for etcd:
+   ```
+   sudo mkdir -p /var/lib/etcd
+   ```
 
-mkdir -p $HOME/.kube
-sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-sudo chown $(id -u):$(id -g) $HOME/.kube/config
+---
 
-kubeadm token create --print-join-command
+## Restore etcd Backup on the Test Cluster
 
-kubeadm join 172.16.129.158:6443 --token qwncff.djsmq401jvm1a69o --discovery-token-ca-cert-hash sha256:509703ff26c11caca254b189fc3d47d25996c940b12a36f56bef0c18b494e9aa
+1. Restore the etcd backup:
+   ```
+   ETCDCTL_API=3 etcdctl snapshot restore /backup/etcd-snapshot.db --data-dir=/var/lib/etcd
+   ```
 
-kubectl get nodes
+---
 
-Check API Server Logs
+## Start etcd
 
-kubectl logs -n kube-system kube-apiserver-$(hostname)
+1. Restart the etcd service:
+   ```
+   sudo systemctl restart etcd
+   ```
+2. Verify the status of etcd:
+   ```
+   sudo systemctl status etcd
+   ```
 
-Check node
+---
 
-journalctl -u kubelet -f
+## Verify etcd is Running
 
-journalctl -u containerd/docker -f
+1. Check the etcd endpoint status:
+   ```
+   ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379
+     --cacert=/etc/kubernetes/pki/etcd/ca.crt
+     --cert=/etc/kubernetes/pki/etcd/server.crt
+     --key=/etc/kubernetes/pki/etcd/server.key
+     endpoint status --write-out=table
+   ```
 
-kubectl logs <pod-name> -n <namespace>
+---
 
-kubectl logs -f -l app=<app-label> -n <namespace>
+## Restart Kubernetes Components
 
-Debug pod
-kubectl describe pod <pod-name> -n <namespace>
-kubectl logs <pod-name> --previous -n <namespace> # Logs from last restart
-kubectl exec -it <pod-name> -- /bin/sh # Access container shell
+1. Restart the Kubernetes components:
+   ```
+   sudo systemctl restart kube-apiserver kube-controller-manager kube-scheduler kubelet
+   ```
+
+---
+
+## Verify Kubernetes is Restored
+
+1. Check the cluster status:
+   ```
+   kubectl get nodes
+   ```
+2. Verify that all pods are restored:
+   ```
+   kubectl get pods -A
+   ```
+
+---
+
+## Final Steps: Testing in the New Environment
+
+1. Access services:
+   ```
+   kubectl get svc -A
+   ```
+2. Check deployments:
+   ```
+   kubectl get deployments -A
+   ```
+3. If some pods fail, check their logs:
+   ```
+   kubectl logs -f <pod-name> -n <namespace>
+   ```
+
+---
+
+## Summary of Key Commands
+
+| Step                            | Command                                                                                |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| Copy backup to test environment | `scp /backup/etcd-snapshot.db user@your-test-node:/home/user/`                         |
+| Stop etcd                       | `sudo systemctl stop etcd`                                                             |
+| Remove old etcd data            | `sudo mv /var/lib/etcd /var/lib/etcd.old && sudo mkdir -p /var/lib/etcd`               |
+| Restore etcd backup             | `etcdctl snapshot restore /backup/etcd-snapshot.db --data-dir=/var/lib/etcd`           |
+| Restart etcd                    | `sudo systemctl restart etcd`                                                          |
+| Verify etcd status              | `etcdctl endpoint status --write-out=table`                                            |
+| Restart Kubernetes components   | `sudo systemctl restart kube-apiserver kube-controller-manager kube-scheduler kubelet` |
+| Verify cluster                  | `kubectl get nodes`                                                                    |
+
+---
