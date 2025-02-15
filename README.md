@@ -1,6 +1,5 @@
----
-
 ## Table of Contents
+
 1. [Deploy a New Kubernetes Master Node](#deploy-a-new-kubernetes-master-node)
 2. [Copy the Backup to the Test Machine](#copy-the-backup-to-the-test-machine)
 3. [Stop etcd on the Test Cluster](#stop-etcd-on-the-test-cluster)
@@ -156,5 +155,3 @@
 | Verify etcd status              | `etcdctl endpoint status --write-out=table`                                            |
 | Restart Kubernetes components   | `sudo systemctl restart kube-apiserver kube-controller-manager kube-scheduler kubelet` |
 | Verify cluster                  | `kubectl get nodes`                                                                    |
-
----
