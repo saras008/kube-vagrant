@@ -1,0 +1,148 @@
+Vagrant.configure("2") do |config|
+  # Use Ubuntu 22.04 from Bento
+  config.vm.box = "bento/ubuntu-22.04"
+
+  # Default resources for VMware
+  config.vm.provider "vmware_desktop" do |v|
+    v.memory = "2048"
+    v.cpus = 1
+  end
+
+  # -----------------------------
+  # Define the Control Plane Node
+  # -----------------------------
+  config.vm.define "k8s-master" do |master|
+    master.vm.hostname = "k8s-master"
+    master.vm.network "private_network", type: "dhcp"
+
+    # Override default for the master node
+    master.vm.provider "vmware_desktop" do |v|
+      v.memory = "4096"
+      v.cpus = 2
+    end
+
+    master.vm.provision "shell", inline: <<-SHELL
+      # Basic OS Updates
+      sudo apt-get update -y
+
+      # Disable Swap
+      sudo swapoff -a
+      sudo sed -i '/swap/d' /etc/fstab
+
+      # Enable br_netfilter
+      cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+      sudo modprobe br_netfilter
+
+      # Enable IP forwarding & bridge-nf-call-iptables
+      echo "net.ipv4.ip_forward = 1" | sudo tee -a /etc/sysctl.conf
+      echo "net.bridge.bridge-nf-call-iptables=1" | sudo tee -a /etc/sysctl.conf
+      sudo sysctl --system
+
+      # Install dependencies
+      sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release net-tools
+
+      # Add CRI-O repository
+      . /etc/os-release
+      sudo mkdir -p /usr/share/keyrings
+      curl -fsSL https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:1.29.x/xUbuntu_${VERSION_ID}/Release.key \
+        | sudo gpg --dearmor -o /usr/share/keyrings/libcontainers-crio.gpg
+
+      echo "deb [signed-by=/usr/share/keyrings/libcontainers-crio.gpg] https://download.opensuse.org/repositories/devel/kubic/libcontainers/stable/cri-o/1.29.x/xUbuntu_${VERSION_ID}/ /" \
+        | sudo tee /etc/apt/sources.list.d/crio.list
+
+      sudo apt-get update -y
+      sudo apt-get install -y cri-o cri-o-runc
+
+      # Start & enable CRI-O
+      sudo systemctl restart crio
+      sudo systemctl enable crio
+
+      # Add Kubernetes repo for v1.29
+      curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo tee /etc/apt/keyrings/kubernetes-apt-keyring.asc > /dev/null
+      echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+      sudo apt-get update
+      sudo apt-get install -y kubelet kubeadm kubectl kubernetes-cni
+      sudo apt-mark hold kubelet kubeadm kubectl
+
+      # Enable & start kubelet
+      sudo systemctl enable --now kubelet
+
+      # Disable firewall (if desired)
+      sudo systemctl stop ufw
+      sudo systemctl disable ufw
+    SHELL
+  end
+
+  # -----------------------------
+  # Define Worker Nodes
+  # -----------------------------
+  (1..2).each do |i|
+    config.vm.define "k8s-worker#{i}" do |worker|
+      worker.vm.hostname = "k8s-worker#{i}"
+      worker.vm.network "private_network", type: "dhcp"
+
+      # Worker node resources
+      worker.vm.provider "vmware_desktop" do |v|
+        v.memory = "2048"
+        v.cpus = 1
+      end
+
+      worker.vm.provision "shell", inline: <<-SHELL
+        # Basic OS Updates
+        sudo apt-get update -y
+
+        # Disable Swap
+        sudo swapoff -a
+        sudo sed -i '/swap/d' /etc/fstab
+
+        # Enable br_netfilter
+        cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+        sudo modprobe br_netfilter
+
+        # Enable IP forwarding & bridge-nf-call-iptables
+        echo "net.ipv4.ip_forward = 1" | sudo tee -a /etc/sysctl.conf
+        echo "net.bridge.bridge-nf-call-iptables=1" | sudo tee -a /etc/sysctl.conf
+        sudo sysctl --system
+
+        # Install dependencies
+        sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release net-tools
+
+        # Add CRI-O repository
+        . /etc/os-release
+        sudo mkdir -p /usr/share/keyrings
+        curl -fsSL https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:1.29.x/xUbuntu_${VERSION_ID}/Release.key \
+          | sudo gpg --dearmor -o /usr/share/keyrings/libcontainers-crio.gpg
+
+        echo "deb [signed-by=/usr/share/keyrings/libcontainers-crio.gpg] https://download.opensuse.org/repositories/devel/kubic/libcontainers/stable/cri-o/1.29.x/xUbuntu_${VERSION_ID}/ /" \
+          | sudo tee /etc/apt/sources.list.d/crio.list
+
+        sudo apt-get update -y
+        sudo apt-get install -y cri-o cri-o-runc
+
+        # Start & enable CRI-O
+        sudo systemctl restart crio
+        sudo systemctl enable crio
+
+        # Add Kubernetes repo for v1.29
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo tee /etc/apt/keyrings/kubernetes-apt-keyring.asc > /dev/null
+        echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+        sudo apt-get update
+        sudo apt-get install -y kubelet kubeadm kubectl kubernetes-cni
+        sudo apt-mark hold kubelet kubeadm kubectl
+
+        # Enable & start kubelet
+        sudo systemctl enable --now kubelet
+
+        # Disable firewall (if desired)
+        sudo systemctl stop ufw
+        sudo systemctl disable ufw
+      SHELL
+    end
+  end
+end
