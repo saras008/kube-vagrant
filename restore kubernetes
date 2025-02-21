@@ -5,19 +5,22 @@ cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
 br_netfilter
 EOF
 
+172.16.129.208 k8s-master
+172.16.129.209 k8s-worker1
+172.16.129.210 k8s-worker2
+172.16.129.211 jenkins-server
+
 sudo modprobe overlay
 sudo modprobe br_netfilter
 sudo sysctl --system
 sudo apt-get install -y apt-transport-https ca-certificates curl gnupg gpg
 sudo apt-get install -y containerd
-sudo mkdir -p /etc/containerd
 containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
+sudo sed -i '/\[plugins\."io.containerd.grpc.v1.cri"\.containerd\.runtimes\.runc\.options\]/,/\[/{s/SystemdCgroup = false/SystemdCgroup = true/}' /etc/containerd/config.toml
 sudo systemctl restart containerd
 sudo systemctl enable containerd
-
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo tee /etc/apt/keyrings/kubernetes-apt-keyring.asc > /dev/null
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
-
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 sudo apt-get update -y
 sudo apt-get install -y kubelet kubeadm kubectl
 sudo apt-mark hold kubelet kubeadm kubectl
@@ -99,3 +102,125 @@ sudo kubeadm init --pod-network-cidr=192.168.1.0/16
 
 sudo crictl stop 11f368cb6fb3d
 sudo crictl rm 11f368cb6fb3d
+
+
+
+
+########## Jenkins
+
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+
+#on Master
+sudo find / -name "cacerts"
+
+sudo keytool -importcert -keystore /etc/ssl/certs/java/cacerts -storepass changeit -noprompt -alias k8s-api -file /etc/ssl/certs/ca.crt
+
+sudo systemctl restart jenkins
+
+
+scp /etc/kubernetes/pki/ca.crt vagrant@172.16.129.211:/home/vagrant/ca.crt
+
+Quick Fix: Disable certificate verification in Jenkins.
+Recommended: Import the Kubernetes CA certificate into the Jenkins Java truststore.
+Alternative: Use a Kubernetes service account token instead of SSL authentication.
+
+
+kubectl cluster-info | grep "Kubernetes control plane"
+
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jenkins-token
+  annotations:
+    kubernetes.io/service-account.name: jenkins
+type: kubernetes.io/service-account-token
+EOF
+
+kubectl get secret jenkins-token -o jsonpath="{.data.token}" | base64 --decode
+
+kubectl get serviceaccount
+kubectl delete  serviceaccount jenkins
+kubectl create serviceaccount jenkins
+kubectl create clusterrolebinding jenkins-role-binding   --clusterrole=cluster-admin   --serviceaccount=default:jenkins
+kubectl get secret $(kubectl get serviceaccount jenkins -o jsonpath="{.secrets[0].name}") -o jsonpath="{.data.token}" | base64 --decode
+kubectl get clusterrolebinding | grep jenkins
+kubectl create serviceaccount jenkins
+kubectl create clusterrolebinding jenkins-role-binding   --clusterrole=cluster-admin   --serviceaccount=default:jenkins
+kubectl get secret $(kubectl get serviceaccount jenkins -o jsonpath="{.secrets[0].name}") -o jsonpath="{.data.token}" | base64 --decode
+kubectl get serviceaccount jenkins -o yaml
+kubectl get secrets
+kubectl get secret jenkins-token -o jsonpath="{.data.token}" | base64 --decode
+
+
+helm create my-app
+kubectl describe service my-app
+kubectl get service my-app -o wide
+kubectl port-forward svc/my-app 8080:80
+kubectl patch svc my-app -p '{"spec": {"type": "NodePort"}'
+kubectl get svc my-app
+kubectl describe svc my-app
+helm upgrade --install my-app ./my-app
+kubectl patch svc my-app -p '{"spec": {"type": "LoadBalancer"}}'
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+kubectl get ingress
+kubectl get svc -n ingress-nginx
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/main/config/manifests/metallb-native.yaml
+kubectl get namespace
+kubectl patch svc -n ingress-nginx ingress-nginx-controller -p '{"spec": {"type": "LoadBalancer"}}'
+kubectl get ipaddresspool -n metallb-system
+
+vagrant@k8s-master:~$ cat metallb-config.yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ingress-ip-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - 172.16.129.250-172.16.129.254  # Set a free IP range from your network
+
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: ingress-advertisement
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - ingress-ip-pool
+
+
+vagrant@k8s-master:~/my-app$ cat values.yaml
+replicaCount: 1
+
+image:
+  repository: nginx
+  tag: latest
+  pullPolicy: Always
+
+serviceAccount:
+  create: true
+  name: "my-app-sa"
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+  hosts:
+    - host: my-app.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
